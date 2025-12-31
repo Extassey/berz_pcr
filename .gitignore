@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+.env/
+venv/
+myenv/
+
+# Pipeline outputs
+holocene/
+products/
+consensus/
+
+# Large data
+*.bam
+*.bai
+*.mmi
+
+# OS junk
+.DS_Store
+Thumbs.db

@@ -47,12 +47,25 @@ def run(
         key=lambda p: p.name.lower(),
     )
 
+    # if you want non weighted genomes use lines below, dont forget other line as well
+    
     templates = []
     for f in fasta_files:
         for rec_i, (_hdr, seq) in enumerate(read_fasta(f), start=1):
             if len(seq) >= chunk_size:
                 templates.append((f"{f.name}::rec{rec_i}", seq))
-
+    
+    """
+    templates = []
+    weights = []
+    for f in fasta_files:
+        for rec_i, (_hdr, seq) in enumerate(read_fasta(f), start=1):
+            if len(seq) >= chunk_size:
+                template_id = f"{f.name}::rec{rec_i}"
+                templates.append((template_id, seq))
+                weights.append(len(seq) - chunk_size + 1)
+    
+    """
     if not templates:
         raise SystemExit(f"No sequences of length >= {chunk_size} found in {input_dir}")
 
@@ -67,7 +80,11 @@ def run(
 
     while written < target_reads and attempts < max_attempts:
         attempts += 1
+        # if you want non weighted genomes use
         template_id, seq = rng.choice(templates)
+        # make sure you do the other lines above as well
+
+        #template_id, seq = rng.choices(templates, weights=weights, k=1)[0]
         max_start = len(seq) - chunk_size
         start = rng.randint(0, max_start)
         end = start + chunk_size

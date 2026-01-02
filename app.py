@@ -5,6 +5,7 @@ import sys
 import pandas as pd
 import shutil
 
+# Run with:  streamlit run app.py
 
 
 st.set_page_config(page_title="Berz PCR Pipeline", layout="wide")

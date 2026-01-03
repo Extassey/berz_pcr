@@ -1,0 +1,7 @@
+Top serotype candidates (ranked):
+- 11A/11D: breadth=29.55%, aligned_bases=584, reads=10000, identity~=94.35%
+- 22F: breadth=0.00%, aligned_bases=0, reads=0, identity~=0.00%
+- 9A/9V: breadth=0.00%, aligned_bases=0, reads=0, identity~=0.00%
+- 15B/15C: breadth=0.00%, aligned_bases=0, reads=0, identity~=0.00%
+- 9N/9L: breadth=0.00%, aligned_bases=0, reads=0, identity~=0.00%
+- 19F: breadth=0.00%, aligned_bases=0, reads=0, identity~=0.00%

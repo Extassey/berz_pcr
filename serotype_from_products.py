@@ -135,7 +135,7 @@ def rank(refs: Path, bam: Path, cov_tsv: Path, out_ranked: Path, out_top: Path, 
 
 def parse_args():
     ap = argparse.ArgumentParser(description="Serotype ranking from in-silico PCR products using minimap2+samtools.")
-    ap.add_argument("--products", default="products", help="Folder containing product_*.fasta files.")
+    ap.add_argument("--products", default="products_cycled", help="Folder containing product_*.fasta files.")
     ap.add_argument("--refs", default="cps_refs.fasta", help="cps reference FASTA (one locus per serotype).")
     ap.add_argument("--mmi", default="cps_refs.mmi", help="minimap2 index path for refs.")
     ap.add_argument("--rebuild-index", action="store_true", help="Force rebuild of the minimap2 index.")

@@ -7,9 +7,8 @@ import shutil
 
 # Run with:  streamlit run app.py
 
-
 st.set_page_config(page_title="Berz PCR Pipeline", layout="wide")
-st.title("Berz PCR Pipeline: Shear → In-silico PCR → Serotype Report")
+st.title("Berz PCR Pipeline: Shear → In-silico PCR → Thermocycle → Serotype Report")
 
 ROOT = Path(".").resolve()
 
@@ -47,8 +46,16 @@ with col1:
 
 with col2:
     holocene_dir = st.text_input("Sheared reads output folder", value="holocene")
-    products_dir = st.text_input("PCR products folder", value="products")
+
+    # NEW: split raw products (cycle 0) vs cycled products (final)
+    products_raw_dir = st.text_input("PCR products (raw) folder", value="products")
+    products_dir = st.text_input("PCR products (cycled) folder", value="products_cycled")  # NEW default
+
     report_script = st.text_input("Report script", value="serotype_from_products.py")
+
+# NEW: amplification script path
+st.subheader("1b) Thermocycling script (optional)")
+amplification_script = st.text_input("Amplification script", value="amplification.py")
 
 st.subheader("2) Shearing settings (main.py)")
 c1, c2, c3, c4 = st.columns(4)
@@ -61,9 +68,23 @@ with c3:
 with c4:
     avoid_dups = st.checkbox("Avoid duplicate windows", value=True)
 
+# NEW: cycling settings
+st.subheader("2b) Thermocycling settings (amplification.py)")
+cc1, cc2, cc3 = st.columns(3)
+with cc1:
+    cycles = st.number_input("PCR cycles", min_value=1, max_value=60, value=35, step=1)
+with cc2:
+    n_out = st.number_input("Cycled output files (N)", min_value=100, max_value=200000, value=10000, step=100)
+with cc3:
+    amp_seed = st.number_input("Cycling RNG seed", min_value=0, max_value=10_000_000, value=42, step=1)
+
 st.subheader("3) Run controls")
 run_shear = st.checkbox("Run shear (main.py)", value=True)
 run_pcr = st.checkbox("Run in-silico PCR (insilico.py)", value=True)
+
+# NEW
+run_cycle = st.checkbox("Run thermocycling (amplification.py)", value=True)
+
 run_report = st.checkbox("Run report (serotype_from_products.py)", value=True)
 
 st.divider()
@@ -90,10 +111,7 @@ if st.button("▶ Run Pipeline", type="primary"):
 
         st.success("Starting…")
 
-        # 1) SHEAR: call main.py with args (we’ll add args support next if needed)
-        # If your current main.py doesn’t accept args yet, easiest is:
-        # - keep your current main.py constants
-        # - OR (recommended) I can modify main.py to accept CLI args.
+        # 1) SHEAR
         if run_shear:
             st.subheader("Shear step (main.py)")
 
@@ -111,31 +129,75 @@ if st.button("▶ Run Pipeline", type="primary"):
             ]
             run_cmd(cmd, cwd=str(ROOT))
 
-
-        # 2) PCR
+        # 2) PCR (raw products)
         if run_pcr:
             st.subheader("In-silico PCR (insilico.py)")
 
-            products_path = ROOT / products_dir
-            reset_dir(products_path, "PCR products folder")
+            products_raw_path = ROOT / products_raw_dir
+            reset_dir(products_raw_path, "PCR products (raw) folder")
 
             cmd = [
                 sys.executable, "insilico.py",
                 "--templates", str(ROOT / holocene_dir),
                 "--bed", str(primers_path),
-                "--out", str(products_path),
+                "--out", str(products_raw_path),
             ]
             run_cmd(cmd, cwd=str(ROOT))
+
+        # 2b) Thermocycling (cycled products)
+        if run_cycle:
+            st.subheader("Thermocycling (amplification.py)")
+
+            products_raw_path = ROOT / products_raw_dir
+            
+            report_path = products_raw_path / "amplification_report.tsv"
+            if not report_path.exists():
+                st.error(f"Missing report for cycling: {report_path}. Did insilico.py run?")
+                st.stop()
+
+            products_cycled_path = ROOT / products_dir
+            reset_dir(products_cycled_path, "PCR products (cycled) folder")
+
+            cmd = [
+                sys.executable, amplification_script,
+                "--report", str(report_path),
+                "--products-dir", str(products_raw_path),
+                "--out-dir", str(products_cycled_path),
+                "--cycles", str(int(cycles)),
+                "--n-out", str(int(n_out)),
+                "--seed", str(int(amp_seed)),
+            ]
+            run_cmd(cmd, cwd=str(ROOT))
+
+            png = products_cycled_path / "ct_curves.png"
+            if png.exists():
+                st.image(str(png), caption="Synthetic Ct curves (log fluorescence)")
+
 
         # 3) REPORT
         if run_report:
             st.subheader("Serotype report")
-            cmd = [
-                sys.executable, report_script,
-            ]
-            run_cmd(cmd, cwd=str(ROOT))
 
-            ranked = ROOT / products_dir / "serotype_ranked.tsv"
+            # IMPORTANT: make report use cycled products by default
+            # Option 1 (recommended): update serotype_from_products.py to accept --products
+            # We'll call it that way if possible; if not, it will just run as-is.
+            products_used = ROOT / (products_dir if run_cycle else products_raw_dir)
+
+            cmd = [sys.executable, report_script]
+
+            # If your report script supports CLI args, this is ideal:
+            # e.g., serotype_from_products.py --products products_cycled --refs cps_refs.fasta
+            cmd += ["--products", str(products_used)]  # safe if script accepts it
+            cmd += ["--refs", str(refs_path)]          # safe if script accepts it
+
+            try:
+                run_cmd(cmd, cwd=str(ROOT))
+            except RuntimeError:
+                # Fallback: run without args (old behavior)
+                st.warning("Report script did not accept --products/--refs; running without args.")
+                run_cmd([sys.executable, report_script], cwd=str(ROOT))
+
+            ranked = products_used / "serotype_ranked.tsv"
             if ranked.exists():
                 df = pd.read_csv(ranked, sep="\t")
                 st.subheader("Top serotype candidates")

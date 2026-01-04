@@ -60,14 +60,29 @@ def binomial_draw(n: int, p: float, rng: random.Random) -> int:
     return max(0, min(n, k))
 
 
-def simulate_curves(p_list, cycles, replicates, seed, ct_threshold,
+def poisson_draw(lam: float, rng: random.Random) -> int:
+    """Poisson sampler (Knuth). Good for small lam (<~10), which is what you want here."""
+    if lam <= 0:
+        return 0
+    L = math.exp(-lam)
+    k = 0
+    p = 1.0
+    while p > L:
+        k += 1
+        p *= rng.random()
+    return k - 1
+
+
+def simulate_curves(p_list, start_lambda: float, eff_decay: float, ct_threshold: float, cycles, replicates, seed,
                     baseline_mu=50.0, baseline_sigma=5.0, K=1e8):
     rng = random.Random(seed)  # seed can be None for random
     curves = []
     cts = []
 
     for _ in range(replicates):
-        Ns = [1] * len(p_list)
+        # Sparse starting templates: most targets start at 0 copies, some at 1–few.
+        Ns = [poisson_draw(start_lambda, rng) for _ in p_list]
+
         F = []
         ct = None
 
@@ -80,7 +95,11 @@ def simulate_curves(p_list, cycles, replicates, seed, ct_threshold,
                 sat = max(0.0, 1.0 - total_N / K)
                 for i, p in enumerate(p_list):
                     n = Ns[i]
-                    effective_p = p * sat
+                    # Late-cycle drag / inhibition: efficiency decays with cycle number
+                    cycle_drag = math.exp(-eff_decay * (t - 1))
+
+                    effective_p = p * sat * cycle_drag
+
                     new = binomial_draw(n, effective_p, rng)
                     Ns[i] = n + new
 
@@ -241,8 +260,15 @@ def main():
     # ct graph
     ap.add_argument("--replicates", type=int, default=50,
                 help="How many synthetic qPCR replicates to simulate for Ct curves.")
-    ap.add_argument("--ct-threshold", type=float, default=1e6,
-                help="Fluorescence threshold for Ct calling.")
+    
+
+    ap.add_argument("--start_lambda", type=float, default=0.3,
+                        help="Mean starting copies per target (Poisson). Use <1 for sparse templates.")
+    ap.add_argument("--eff_decay", type=float, default=0.12,
+                        help="Per-cycle exponential decay of efficiency. Higher = slower late-cycle growth.")
+    ap.add_argument("--ct_threshold", type=float, default=1e6,
+                        help="Fluorescence threshold for Ct call (raise to make Ct later / absent).")
+
 
 
     args = ap.parse_args()
@@ -378,7 +404,19 @@ def main():
     print(f"Params: {params_path.resolve()}")
 
     p_list = [pr["p_i"] for pr in products]
-    curves, cts = simulate_curves(p_list, args.cycles, args.replicates, args.seed, args.ct_threshold)
+    curves, cts = simulate_curves(
+        p_list=p_list,
+        start_lambda=args.start_lambda,
+        eff_decay=args.eff_decay,
+        ct_threshold=args.ct_threshold,
+        cycles=args.cycles,
+        replicates=args.replicates,
+        seed=args.seed,
+        baseline_mu=50.0,
+        baseline_sigma=5.0,
+        K=1e8,
+    )
+
 
     write_curves_csv(out_dir / "ct_curves.csv", curves)
     with (out_dir / "ct_values.tsv").open("w") as f:

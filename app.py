@@ -11,6 +11,24 @@ import base64
 
 
 
+def set_bg(image_path):
+    with open(image_path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode()
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background-image: url("data:image/png;base64,{encoded}");
+            background-size: cover;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+set_bg("background3.png")
+
+
 st.set_page_config(page_title="Berz PCR Pipeline", layout="wide")
 st.title("Berz PCR Pipeline: Shear → In-silico PCR → Thermocycle → Serotype Report")
 
@@ -93,7 +111,7 @@ cc1, cc2, cc3 = st.columns(3)
 with cc1:
     cycles = st.number_input("PCR cycles", min_value=1, max_value=60, value=35, step=1)
 with cc2:
-    n_out = st.number_input("Cycled output files (N)", min_value=100, max_value=200000, value=10000, step=100)
+    n_out = st.number_input("Cycled output files (N)", min_value=1, max_value=200000, value=10000, step=100)
 with cc3:
     amp_seed_text = st.text_input("Cycling RNG seed (leave blank for random)", value="")
 

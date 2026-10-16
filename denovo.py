@@ -13,9 +13,9 @@ Here is how to run from terminal
 
 python3 denovo.py \
   --products-dir products \
-  --ref-fasta cps_refs.fasta \
-  --contig "9N/9L" \
-  --out products/consensus_9N_9L.fasta \
+  --ref-fasta 15C.trimmed.fasta \
+  --contig "15C" \
+  --out products/consensus_15C.fasta \
   --min-depth 3
 
 

@@ -18,8 +18,12 @@ def set_bg(image_path):
         f"""
         <style>
         .stApp {{
-            background-image: url("data:image/png;base64,{encoded}");
+            background-image:
+                linear-gradient(rgba(255, 255, 255, 0.80), rgba(255, 255, 255, 0.65)),
+                url("data:image/png;base64,{encoded}");
             background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
         }}
 
         

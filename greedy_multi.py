@@ -3,25 +3,31 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 
 """
-How to run greedy denovo overlap
+Greedy de novo overlap assembly from FASTA or FASTQ input.
 
-python3 assemble_greedy_overlap.py --products-dir products --min-ovl 125 --out products/denovo_greedy.fasta
-
+Examples:
+  python3 greedy_multi.py --products-dir products --min-ovl 125 --out products/denovo_greedy.fasta
+  python3 greedy_multi.py --fastq reads.fastq --min-ovl 125 --out denovo_greedy.fasta
 """
 
 FASTA_EXTENSIONS = {".fa", ".fasta", ".fna"}
+FASTQ_EXTENSIONS = {".fq", ".fastq"}
+SEQUENCE_EXTENSIONS = FASTA_EXTENSIONS | FASTQ_EXTENSIONS
 
 _rc_map = str.maketrans("ACGTNacgtn", "TGCANtgcan")
+
+
 def revcomp(seq: str) -> str:
     return seq.translate(_rc_map)[::-1]
 
+
 def read_fasta(path: Path) -> List[Tuple[str, str]]:
-    recs = []
+    recs: List[Tuple[str, str]] = []
     header = None
-    seq = []
+    seq: List[str] = []
     with path.open() as f:
         for line in f:
             line = line.strip()
@@ -38,83 +44,142 @@ def read_fasta(path: Path) -> List[Tuple[str, str]]:
             recs.append((header, "".join(seq).upper()))
     return recs
 
+
+def read_fastq(path: Path) -> List[Tuple[str, str]]:
+    """Read standard four-line FASTQ records and discard quality values."""
+    recs: List[Tuple[str, str]] = []
+    with path.open() as f:
+        record_number = 0
+        while True:
+            header_line = f.readline()
+            if not header_line:
+                break
+            if not header_line.strip():
+                continue
+
+            record_number += 1
+            sequence_line = f.readline()
+            separator_line = f.readline()
+            quality_line = f.readline()
+            if not sequence_line or not separator_line or not quality_line:
+                raise ValueError(f"{path}: incomplete FASTQ record {record_number}")
+
+            header = header_line.rstrip("\r\n")
+            sequence = sequence_line.strip()
+            separator = separator_line.rstrip("\r\n")
+            quality = quality_line.rstrip("\r\n")
+
+            if not header.startswith("@"):
+                raise ValueError(
+                    f"{path}: FASTQ record {record_number} header does not start with '@'"
+                )
+            if not separator.startswith("+"):
+                raise ValueError(
+                    f"{path}: FASTQ record {record_number} separator does not start with '+'"
+                )
+            if len(sequence) != len(quality):
+                raise ValueError(
+                    f"{path}: FASTQ record {record_number} has sequence length "
+                    f"{len(sequence)} but quality length {len(quality)}"
+                )
+            recs.append((header[1:].strip(), sequence.upper()))
+    return recs
+
+
+def read_sequences(path: Path) -> List[Tuple[str, str]]:
+    if not path.is_file():
+        raise FileNotFoundError(f"Input file not found: {path.resolve()}")
+    suffix = path.suffix.lower()
+    if suffix in FASTA_EXTENSIONS:
+        return read_fasta(path)
+    if suffix in FASTQ_EXTENSIONS:
+        return read_fastq(path)
+    supported = ", ".join(sorted(SEQUENCE_EXTENSIONS))
+    raise ValueError(f"Unsupported input extension for {path}; expected {supported}")
+
+
 def load_sequences_from_dir(products_dir: Path, prefix: str = "product_") -> List[Tuple[str, str]]:
-    fasta_files = sorted(
-        [p for p in products_dir.iterdir() if p.suffix.lower() in FASTA_EXTENSIONS],
-        key=lambda p: p.name
+    if not products_dir.is_dir():
+        raise NotADirectoryError(f"Input directory not found: {products_dir.resolve()}")
+    sequence_files = sorted(
+        (p for p in products_dir.iterdir() if p.suffix.lower() in SEQUENCE_EXTENSIONS),
+        key=lambda p: p.name,
     )
     seqs: List[Tuple[str, str]] = []
-    for fp in fasta_files:
-        if prefix and not fp.name.startswith(prefix):
+    for path in sequence_files:
+        if prefix and not path.name.startswith(prefix):
             continue
-        for h, s in read_fasta(fp):
-            seqs.append((h, s))
+        seqs.extend(read_sequences(path))
     return seqs
 
-def load_sequences_from_fasta(fasta_path: Path) -> List[Tuple[str, str]]:
-    return read_fasta(fasta_path)
 
-def best_overlap(a: str, b: str, min_ovl: int, max_ovl: Optional[int] = None) -> int:
-    """
-    Return best suffix(a) == prefix(b) overlap length >= min_ovl, else 0.
-    Tries longer overlaps first for speed by checking candidate lengths.
-    """
+def best_overlap(
+    a: str,
+    b: str,
+    min_ovl: int,
+    min_identity: float,
+    max_ovl: Optional[int] = None,
+) -> Tuple[int, float]:
+    """Return the longest acceptable ungapped overlap and its identity."""
     if max_ovl is None:
         max_ovl = min(len(a), len(b))
     max_ovl = min(max_ovl, len(a), len(b))
-    # check from longest to shortest
     for k in range(max_ovl, min_ovl - 1, -1):
-        if a[-k:] == b[:k]:
-            return k
-    return 0
+        matches = sum(left == right for left, right in zip(a[-k:], b[:k]))
+        identity = matches / k
+        if identity >= min_identity:
+            return k, identity
+    return 0, 0.0
+
 
 def greedy_assemble(
     seqs: List[str],
     min_ovl: int,
+    min_identity: float,
     consider_revcomp: bool = True,
-    max_rounds: int = 100000
+    max_rounds: int = 100000,
 ) -> Tuple[str, List[str], List[str]]:
-    """
-    Greedy assembly into one contig by repeatedly merging the best overlap.
-    Returns (contig, leftovers, used_sequences_original_orientation).
-    """
     seqs = [s for s in seqs if s and set(s) <= set("ACGTN")]
     seqs.sort(key=len, reverse=True)
     if not seqs:
-        raise SystemExit("No sequences loaded.")
+        raise SystemExit("No valid sequences loaded.")
 
-    used: List[str] = []
+    used = []
     contig = seqs.pop(0)
     used.append(contig)
-
     rounds = 0
+
     while seqs and rounds < max_rounds:
         rounds += 1
         best_i = None
         best_k = 0
+        best_identity = 0.0
         best_oriented = None
         best_side = None
 
-        for i, s in enumerate(seqs):
-            candidates = [s]
+        for i, sequence in enumerate(seqs):
+            candidates = [sequence]
             if consider_revcomp:
-                candidates.append(revcomp(s))
+                candidates.append(revcomp(sequence))
+            for candidate in candidates:
+                overlap, identity = best_overlap(
+                    contig, candidate, min_ovl, min_identity
+                )
+                if (overlap, identity) > (best_k, best_identity):
+                    best_k, best_identity = overlap, identity
+                    best_i, best_oriented, best_side = i, candidate, "right"
 
-            for cand in candidates:
-                k = best_overlap(contig, cand, min_ovl)
-                if k > best_k:
-                    best_k, best_i, best_oriented, best_side = k, i, cand, "right"
-
-                k2 = best_overlap(cand, contig, min_ovl)
-                if k2 > best_k:
-                    best_k, best_i, best_oriented, best_side = k2, i, cand, "left"
+                overlap, identity = best_overlap(
+                    candidate, contig, min_ovl, min_identity
+                )
+                if (overlap, identity) > (best_k, best_identity):
+                    best_k, best_identity = overlap, identity
+                    best_i, best_oriented, best_side = i, candidate, "left"
 
         if best_i is None or best_k < min_ovl:
             break
-
         original = seqs.pop(best_i)
         used.append(original)
-
         if best_side == "right":
             contig = contig + best_oriented[best_k:]
         else:
@@ -122,68 +187,96 @@ def greedy_assemble(
 
     return contig, seqs, used
 
-def assemble_all(seqs: List[str], min_ovl: int, consider_revcomp: bool, max_contigs: int = 1000):
+
+def assemble_all(
+    seqs: List[str],
+    min_ovl: int,
+    min_identity: float,
+    consider_revcomp: bool,
+    max_contigs: int = 1000,
+):
     contigs = []
     remaining = seqs[:]
     for _ in range(max_contigs):
         if not remaining:
             break
-        contig, remaining, used = greedy_assemble(remaining, min_ovl, consider_revcomp=consider_revcomp)
+        contig, remaining, used = greedy_assemble(
+            remaining,
+            min_ovl,
+            min_identity,
+            consider_revcomp=consider_revcomp,
+        )
         contigs.append(contig)
-        # optional: stop if contig is “trivial” (only seed used)
         if len(used) <= 1:
             break
     return contigs, remaining
 
 
-def write_fasta(path: Path, header: str, seq: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w") as f:
-        f.write(f">{header}\n")
-        for i in range(0, len(seq), 80):
-            f.write(seq[i:i+80] + "\n")
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Greedy reference-free overlap assembly from FASTA or FASTQ."
+    )
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--products-dir", help="Directory containing FASTA and/or FASTQ files.")
+    inputs.add_argument("--fasta", help="Single FASTA input file.")
+    inputs.add_argument(
+        "--fastq",
+        help="Single .fastq or .fq file; relative paths are resolved from the current/root directory.",
+    )
+    parser.add_argument("--min-ovl", type=int, default=125, help="Minimum required overlap (bp).")
+    parser.add_argument(
+        "--min-identity",
+        type=float,
+        default=1.0,
+        help="Minimum overlap identity from 0 to 1 (default: 1.0, exact match).",
+    )
+    parser.add_argument("--no-revcomp", action="store_true", help="Disable reverse-complement matching.")
+    parser.add_argument("--out", default="products/denovo_greedy.fasta", help="Output contig FASTA.")
+    parser.add_argument(
+        "--prefix",
+        default="product_",
+        help="Filename prefix in directory mode; use --prefix '' to accept every sequence file.",
+    )
+    args = parser.parse_args()
 
-def main():
-    ap = argparse.ArgumentParser(description="Greedy reference-free overlap assembly of PCR products.")
-    ap.add_argument("--products-dir", help="Folder with product_*.fasta files.")
-    ap.add_argument("--fasta", help="Alternative: a single FASTA containing all products.")
-    ap.add_argument("--min-ovl", type=int, default=125, help="Minimum required overlap (bp). Default 125.")
-    ap.add_argument("--no-revcomp", action="store_true", help="Disable reverse-complement matching.")
-    ap.add_argument("--out", default="products/denovo_greedy.fasta", help="Output contig FASTA.")
-    ap.add_argument("--prefix", default="product_", help="Only read files starting with this prefix (dir mode).")
-    args = ap.parse_args()
+    if args.min_ovl < 1:
+        parser.error("--min-ovl must be at least 1")
+    if not 0.0 <= args.min_identity <= 1.0:
+        parser.error("--min-identity must be between 0 and 1")
 
-    if not args.products_dir and not args.fasta:
-        raise SystemExit("Provide either --products-dir or --fasta")
+    try:
+        if args.products_dir:
+            records = load_sequences_from_dir(Path(args.products_dir), prefix=args.prefix)
+        else:
+            # Path preserves absolute root paths and resolves relative files from cwd.
+            records = read_sequences(Path(args.fasta or args.fastq).expanduser())
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
 
-    if args.products_dir:
-        seq_records = load_sequences_from_dir(Path(args.products_dir), prefix=args.prefix)
-    else:
-        seq_records = load_sequences_from_fasta(Path(args.fasta))
-
-    seqs = [s for _, s in seq_records]
     contigs, leftovers = assemble_all(
-        seqs,
+        [sequence for _, sequence in records],
         min_ovl=args.min_ovl,
+        min_identity=args.min_identity,
         consider_revcomp=not args.no_revcomp,
-        max_contigs=1000,
     )
 
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
+    output = Path(args.out)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w") as f:
+        for index, contig in enumerate(contigs, 1):
+            f.write(
+                f">contig_{index}_minovl{args.min_ovl}_"
+                f"minid{args.min_identity:g}_len{len(contig)}\n"
+            )
+            for i in range(0, len(contig), 80):
+                f.write(contig[i:i + 80] + "\n")
 
-    with out.open("w") as f:
-        for idx, c in enumerate(contigs, 1):
-            f.write(f">contig_{idx}_minovl{args.min_ovl}_len{len(c)}\n")
-            for i in range(0, len(c), 80):
-                f.write(c[i:i+80] + "\n")
-
-    print(f"[OK] Wrote {len(contigs)} contigs to {out}")
+    print(f"[OK] Wrote {len(contigs)} contigs to {output}")
     print(f"[INFO] Leftover sequences not merged: {len(leftovers)}")
-
     if leftovers:
-        lens = sorted([len(x) for x in leftovers], reverse=True)[:10]
-        print(f"[INFO] Top leftover lengths: {lens}")
+        lengths = sorted((len(sequence) for sequence in leftovers), reverse=True)[:10]
+        print(f"[INFO] Top leftover lengths: {lengths}")
+
 
 if __name__ == "__main__":
     main()

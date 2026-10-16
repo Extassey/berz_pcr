@@ -34,25 +34,50 @@ def write_single_fasta(path: Path, header: str, sequence: str):
         for i in range(0, len(sequence), 80):
             f.write(sequence[i:i+80] + "\n")
 
-def find_with_mismatches(seq: str, primer: str, max_mismatches: int, three_prime_lock: int):
+def find_with_mismatches(
+    seq: str,
+    primer: str,
+    max_mismatches: int,
+    three_prime_lock: int,
+    three_prime_side: str = "right",
+):
     """
-    Return list of (start_pos, mismatches) where primer matches seq[start:start+len(primer)]
-    with <= max_mismatches total mismatches AND exact match in last `three_prime_lock` bases.
+    Faster search:
+    1. Use exact 3' locked seed to find candidate positions.
+    2. Only full-check those candidate positions.
     """
     hits = []
     plen = len(primer)
+    slen = len(seq)
 
     if three_prime_lock < 0:
         three_prime_lock = 0
     if three_prime_lock > plen:
         three_prime_lock = plen
 
-    for i in range(0, len(seq) - plen + 1):
-        window = seq[i:i+plen]
+    # If no 3' lock, fall back to slow scan
+    if three_prime_lock == 0:
+        candidate_starts = range(0, slen - plen + 1)
+    else:
+        if three_prime_side == "right":
+            seed = primer[-three_prime_lock:]
+            seed_offset = plen - three_prime_lock
+        elif three_prime_side == "left":
+            seed = primer[:three_prime_lock]
+            seed_offset = 0
+        else:
+            raise ValueError("three_prime_side must be 'right' or 'left'")
 
-        # Enforce exact match at 3′ end (last bases of primer)
-        if three_prime_lock and window[-three_prime_lock:] != primer[-three_prime_lock:]:
-            continue
+        candidate_starts = []
+        pos = seq.find(seed)
+        while pos != -1:
+            start = pos - seed_offset
+            if 0 <= start <= slen - plen:
+                candidate_starts.append(start)
+            pos = seq.find(seed, pos + 1)
+
+    for i in candidate_starts:
+        window = seq[i:i+plen]
 
         mismatches = 0
         for a, b in zip(window, primer):
